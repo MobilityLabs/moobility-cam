@@ -220,3 +220,50 @@ func git(_ arguments: [String], in folder: URL) throws -> String {
         #expect(try verify(folder) != 0)
     }
 }
+
+/// Apple's ticket service drops connections from CI runners, and a dropped connection mustn't lose a notarized release.
+@Suite struct StapleRetryTests {
+    /// Runs staple.sh with a fake `xcrun` that fails the calls numbered in `failing`, and returns the exit status and the calls made.
+    private func staple(failing: [Int] = []) throws -> (status: Int32, calls: [String]) {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let log = folder.appendingPathComponent("calls").path
+        let fake = folder.appendingPathComponent("xcrun")
+        try """
+        #!/bin/bash
+        echo "$2" >> "\(log)"
+        n=$(($(wc -l < "\(log)")))
+        case " \(failing.map(String.init).joined(separator: " ")) " in *" $n "*) exit 1;; esac
+        """.write(to: fake, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fake.path)
+        let path = ProcessInfo.processInfo.environment["PATH"] ?? ""
+        let result = try runScript("staple.sh", ["thing.app"], environment: ["PATH": "\(folder.path):\(path)", "STAPLE_WAIT": "0"])
+        let calls = try String(contentsOfFile: log, encoding: .utf8).split(separator: "\n").map(String.init)
+        return (result.status, calls)
+    }
+
+    @Test func staplesAndValidatesOnce() throws {
+        let result = try staple()
+        #expect(result.status == 0)
+        #expect(result.calls == ["staple", "validate"])
+    }
+
+    @Test func aDroppedConnectionIsRetried() throws {
+        let result = try staple(failing: [1, 2, 3])
+        #expect(result.status == 0)
+        #expect(result.calls == ["staple", "staple", "staple", "staple", "validate"])
+    }
+
+    @Test func aValidationFailureStaplesAgain() throws {
+        let result = try staple(failing: [2])
+        #expect(result.status == 0)
+        #expect(result.calls == ["staple", "validate", "staple", "validate"])
+    }
+
+    @Test func itGivesUpAndFails() throws {
+        let result = try staple(failing: Array(1...20))
+        #expect(result.status != 0)
+        #expect(result.calls == Array(repeating: "staple", count: 5))
+    }
+}
