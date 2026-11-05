@@ -1,0 +1,100 @@
+name: MoobilityCam
+options:
+  bundleIdPrefix: com.mobilitylabs
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+packages:
+  MoobilityCore:
+    path: MoobilityCore
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    from: 2.6.0
+settings:
+  base:
+    DEVELOPMENT_TEAM: HH3SJBAS42
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_HARDENED_RUNTIME: YES
+    SWIFT_VERSION: "5.0"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1000000"
+    # The extension's versions are separate from the app's, and rise only when Extension/ changes,
+    # because macOS replaces it when either changes and replacing a running one can need a restart.
+    EXTENSION_VERSION: "1.0"
+    EXTENSION_BUILD: "1000017"
+targets:
+  MoobilityCam:
+    type: application
+    platform: macOS
+    sources:
+      - path: App
+      - path: THIRD-PARTY.md
+        buildPhase: resources
+    dependencies:
+      - package: MoobilityCore
+      - package: Sparkle
+      - target: MoobilityCamExtension
+        embed: true
+        codeSign: true
+        copy:
+          destination: wrapper
+          subpath: Contents/Library/SystemExtensions
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: Moobility Cam
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSUIElement: true
+        NSCameraUsageDescription: Moobility Cam uses your camera to place you over your background.
+        SUFeedURL: https://github.com/MobilityLabs/moobility-cam/releases/latest/download/appcast.xml
+        SUEnableAutomaticChecks: true
+        SUPublicEDKey: TnkvjZAPXU5dFFGJ6gDABv2oR62tkoK7J8KdOAMVc78=
+    entitlements:
+      path: App/MoobilityCam.entitlements
+      properties:
+        com.apple.developer.system-extension.install: true
+        com.apple.security.application-groups:
+          - $(TeamIdentifierPrefix)com.mobilitylabs.MoobilityCam
+        com.apple.security.device.camera: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.mobilitylabs.MoobilityCam
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        PRODUCT_NAME: MoobilityCam
+      configs:
+        Release:
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGN_IDENTITY: Developer ID Application
+          PROVISIONING_PROFILE_SPECIFIER: Moobility Cam Developer ID
+  MoobilityCamExtension:
+    type: system-extension
+    platform: macOS
+    sources:
+      - path: Extension
+    info:
+      path: Extension/Info.plist
+      properties:
+        CFBundleDisplayName: Moobility Cam
+        CFBundleShortVersionString: $(EXTENSION_VERSION)
+        CFBundleVersion: $(EXTENSION_BUILD)
+        CFBundlePackageType: SYSX
+        NSSystemExtensionUsageDescription: Publishes the Moobility Cam virtual camera.
+        CMIOExtension:
+          CMIOExtensionMachServiceName: $(TeamIdentifierPrefix)com.mobilitylabs.MoobilityCam.Extension
+    entitlements:
+      path: Extension/MoobilityCamExtension.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.security.application-groups:
+          - $(TeamIdentifierPrefix)com.mobilitylabs.MoobilityCam
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.mobilitylabs.MoobilityCam.Extension
+        PRODUCT_NAME: com.mobilitylabs.MoobilityCam.Extension
+      configs:
+        Release:
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGN_IDENTITY: Developer ID Application
+          PROVISIONING_PROFILE_SPECIFIER: Moobility Cam Extension Developer ID

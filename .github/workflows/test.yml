@@ -1,0 +1,21 @@
+name: test
+
+# Never pull_request_target: a fork's code must not run with this repo's secrets. This job uses none.
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    if: github.repository == 'MobilityLabs/moobility-cam'
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unit tests
+        run: swift test --package-path MoobilityCore
+      - name: Nothing personal in the public tree
+        run: scripts/check-public-tree.sh

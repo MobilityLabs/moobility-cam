@@ -1,0 +1,12 @@
+current.png
+.current.tmp.png
+raw/.last-*.txt
+.DS_Store
+build/
+DerivedData/
+*.xcodeproj/
+.tmp/
+.worktrees/
+.superpowers/
+.build/
+dist/

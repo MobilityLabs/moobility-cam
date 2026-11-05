@@ -1,0 +1,195 @@
+name: release
+
+# Builds, signs, notarizes and publishes Moobility Cam.
+#
+#   tag push v1.2.3     Everything below, ending in a published release. A draft is never "latest", so no installed
+#                       copy can see a release until it's complete. A tag whose release is already published fails
+#                       instead of overwriting it. A leftover draft from a failed run is deleted and rebuilt.
+#   workflow_dispatch   A rehearsal: everything except publishing, with the output kept as an artifact for 7 days.
+#
+# Signing material lives in the private repo MobilityLabs/moobility-cam-macos-certs (scripts/configure-release-ci.sh),
+# read with a read-only deploy key. `secrets` can't be used in step `if:`, so HAS_SIGNING, a job env, carries it.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version for the rehearsal build (X.Y.Z). Nothing is published."
+        required: false
+        default: "0.0.0"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.repository == 'MobilityLabs/moobility-cam'
+    runs-on: macos-15
+    timeout-minutes: 60
+    # The signing secrets live in this environment, which only main and v* tags can use. A guard in this file
+    # wouldn't be enough: anyone able to push a branch could edit it and run that branch by hand.
+    environment: release
+    env:
+      HAS_SIGNING: ${{ secrets.MACOS_CERTS_DEPLOY_KEY != '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Work out the version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          # Only a pushed tag publishes. A manual run stays a rehearsal, even when it's started from a tag.
+          if [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF" == refs/tags/* ]]; then raw="${GITHUB_REF#refs/tags/}"; publish=true; else raw="${INPUT_VERSION:-0.0.0}"; publish=false; fi
+          values="$(scripts/version-numbers.sh "$raw")"
+          echo "$values"
+          version="$(sed -n 's/^MARKETING_VERSION=//p' <<<"$values")"
+          { echo "version=$version"; echo "tag=v$version"; echo "publish=$publish"; } >> "$GITHUB_OUTPUT"
+
+      - name: Refuse to overwrite a published release
+        if: steps.version.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if draft="$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null)"; then
+            if [ "$draft" = "false" ]; then
+              echo "::error::$TAG is already published. A fix ships as a new tag."
+              exit 1
+            fi
+            echo "deleting the leftover draft for $TAG"
+            gh release delete "$TAG" --yes
+          fi
+
+      - name: Check the extension's version
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          last="$(git tag --list 'v*' --sort=-v:refname | grep -vx "$TAG" | head -1 || true)"
+          scripts/check-extension-version.sh "$last"
+
+      - name: Unit tests
+        run: swift test --package-path MoobilityCore
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Fail without signing
+        if: env.HAS_SIGNING != 'true'
+        run: |
+          echo "::error::Signing secrets are unset. See scripts/configure-release-ci.sh."
+          exit 1
+
+      - name: Authorize the signing vault
+        env:
+          CERTS_DEPLOY_KEY: ${{ secrets.MACOS_CERTS_DEPLOY_KEY }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/macos_certs_ed25519"
+          printf '%s\n' "$CERTS_DEPLOY_KEY" > "$key"
+          chmod 600 "$key"
+          # GitHub's host keys from its authenticated API, not scanned off the network.
+          gh api meta --jq '.ssh_keys[] | "github.com " + .' > "$RUNNER_TEMP/known_hosts"
+          GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o UserKnownHostsFile=$RUNNER_TEMP/known_hosts" \
+            git clone --depth 1 git@github.com:MobilityLabs/moobility-cam-macos-certs.git "$RUNNER_TEMP/certs"
+
+      - name: Import the signing identity
+        env:
+          CERT_PASS: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          p12="$RUNNER_TEMP/certs/macos-signing.p12"
+          [ -f "$p12" ] || { echo "::error::macos-signing.p12 is missing from the signing vault"; exit 1; }
+          keychain="$RUNNER_TEMP/build.keychain"
+          keychain_pw="$(openssl rand -hex 16)"
+          security create-keychain -p "$keychain_pw" "$keychain"
+          # codesign searches the user search list, not just the default keychain.
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          security default-keychain -s "$keychain"
+          security unlock-keychain -p "$keychain_pw" "$keychain"
+          security set-keychain-settings "$keychain"
+          security import "$p12" -k "$keychain" -P "$CERT_PASS" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_pw" "$keychain"
+
+      - name: Decode the keys
+        env:
+          ASC_KEY_CONTENT: ${{ secrets.ASC_KEY_CONTENT }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          [ -n "${ASC_KEY_CONTENT:-}" ] || { echo "::error::Secret ASC_KEY_CONTENT is unset."; exit 1; }
+          [ -n "${SPARKLE_PRIVATE_KEY:-}" ] || { echo "::error::Secret SPARKLE_PRIVATE_KEY is unset."; exit 1; }
+          # BSD base64 on macOS varies between versions; python3 is on every runner.
+          printf '%s' "$ASC_KEY_CONTENT" | python3 -c \
+            "import base64,sys;sys.stdout.buffer.write(base64.b64decode(sys.stdin.read()))" > "$RUNNER_TEMP/AuthKey.p8"
+          printf '%s' "$SPARKLE_PRIVATE_KEY" > "$RUNNER_TEMP/update.key"
+          chmod 600 "$RUNNER_TEMP/AuthKey.p8" "$RUNNER_TEMP/update.key"
+
+      - name: Build, sign and notarize
+        env:
+          MACOS_IDENTITY: ${{ secrets.MACOS_IDENTITY }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: ASC_KEY_PATH="$RUNNER_TEMP/AuthKey.p8" scripts/build-release.sh "$VERSION"
+
+      - name: Build the update feed
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          tool="$(find build/release/derived/SourcePackages/artifacts -type f -name generate_appcast | head -1)"
+          [ -n "$tool" ] || { echo "::error::Sparkle's generate_appcast is missing"; exit 1; }
+          # Only the zip is in dist/update: generate_appcast refuses two archives of one version.
+          "$tool" --ed-key-file "$RUNNER_TEMP/update.key" \
+            --download-url-prefix "https://github.com/MobilityLabs/moobility-cam/releases/download/$TAG/" \
+            -o dist/appcast.xml dist/update
+          scripts/verify-update-signature.sh build/release/export/MoobilityCam.app "dist/update/Moobility-Cam-$TAG.zip" dist/appcast.xml
+
+      - name: Keep the rehearsal's output
+        if: steps.version.outputs.publish != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: moobility-cam-rehearsal
+          retention-days: 7
+          path: |
+            dist/*.dmg
+            dist/appcast.xml
+            dist/update/*.zip
+
+      - name: Publish
+        if: steps.version.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          zip="dist/update/Moobility-Cam-$TAG.zip"
+          gh release create "$TAG" --draft --verify-tag --title "Moobility Cam $TAG" --generate-notes \
+            "dist/Moobility-Cam-$TAG.dmg" dist/Moobility-Cam.dmg "$zip" dist/appcast.xml
+          # Check what a client will fetch before anyone can see it.
+          check="$RUNNER_TEMP/check"
+          mkdir -p "$check"
+          gh release download "$TAG" --dir "$check"
+          cmp "$check/$(basename "$zip")" "$zip"
+          cmp "$check/Moobility-Cam.dmg" dist/Moobility-Cam.dmg
+          grep -q "releases/download/$TAG/$(basename "$zip")" "$check/appcast.xml" \
+            || { echo "::error::the feed doesn't point at this release's zip"; exit 1; }
+          scripts/verify-update-signature.sh build/release/export/MoobilityCam.app "$check/$(basename "$zip")" "$check/appcast.xml"
+          gh release edit "$TAG" --draft=false --latest
+
+      - name: Clean up
+        if: always()
+        run: |
+          rm -rf "$RUNNER_TEMP/certs" "$RUNNER_TEMP/AuthKey.p8" "$RUNNER_TEMP/update.key" "$RUNNER_TEMP/macos_certs_ed25519"
+          security delete-keychain "$RUNNER_TEMP/build.keychain" 2>/dev/null || true
