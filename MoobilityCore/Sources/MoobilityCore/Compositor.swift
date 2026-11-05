@@ -6,7 +6,13 @@ import Foundation
 /// Puts the masked person from a camera frame over a background, at the fixed output size.
 public final class Compositor: @unchecked Sendable {
     public static let outputSize = CGSize(width: 1280, height: 720)
-    static let maskEdgeSigma: Double = 2
+    // Guided upsampling: how far it looks, and how different in brightness two pixels can be and still count as one surface.
+    static let maskSpatialSigma: Double = 3
+    static let maskLumaSigma: Double = 0.15
+    // Mask values at or below `maskFloor` become background, at or above `maskCeiling` person. The floor sits high to pull
+    // the edge in from the room behind the person.
+    static let maskFloor: Double = 0.35
+    static let maskCeiling: Double = 0.85
 
     private let context: CIContext
     private let lock = NSLock()
@@ -55,20 +61,34 @@ public final class Compositor: @unchecked Sendable {
         let cam = Self.aspectFill(camera, to: size)
         let bg = backgroundFrame()
 
-        let ce = camera.extent, me = mask.extent
-        let stretched = mask
-            .transformed(by: CGAffineTransform(translationX: -me.minX, y: -me.minY)
-                .concatenating(CGAffineTransform(scaleX: ce.width / me.width, y: ce.height / me.height))
-                .concatenating(CGAffineTransform(translationX: ce.minX, y: ce.minY)))
-            .clampedToExtent()
-            .applyingGaussianBlur(sigma: Self.maskEdgeSigma)
-            .cropped(to: ce)
-        let softMask = Self.aspectFill(stretched, to: size)
+        let softMask = Self.aspectFill(Self.refinedMask(mask, guide: camera), to: size)
 
         return cam.applyingFilter("CIBlendWithMask", parameters: [
             kCIInputBackgroundImageKey: bg,
             kCIInputMaskImageKey: softMask,
         ]).cropped(to: CGRect(origin: .zero, size: size))
+    }
+
+    /// `mask`, at `guide`'s size and position, with its edge moved onto the edges in `guide` and its faint rim removed.
+    static func refinedMask(_ mask: CIImage, guide: CIImage) -> CIImage {
+        let ge = guide.extent, me = mask.extent
+        let upsampled = guide.transformed(by: CGAffineTransform(translationX: -ge.minX, y: -ge.minY))
+            .applyingFilter("CIEdgePreserveUpsampleFilter", parameters: [
+                "inputSmallImage": mask.transformed(by: CGAffineTransform(translationX: -me.minX, y: -me.minY)),
+                "inputSpatialSigma": maskSpatialSigma,
+                "inputLumaSigma": maskLumaSigma,
+            ])
+        let gain = CGFloat(1 / (maskCeiling - maskFloor))
+        let offset = CGFloat(-maskFloor) * gain
+        return upsampled
+            .applyingFilter("CIColorMatrix", parameters: [
+                "inputRVector": CIVector(x: gain, y: 0, z: 0, w: 0),
+                "inputGVector": CIVector(x: 0, y: gain, z: 0, w: 0),
+                "inputBVector": CIVector(x: 0, y: 0, z: gain, w: 0),
+                "inputBiasVector": CIVector(x: offset, y: offset, z: offset, w: 0),
+            ])
+            .applyingFilter("CIColorClamp")
+            .transformed(by: CGAffineTransform(translationX: ge.minX, y: ge.minY))
     }
 
     /// `from` dissolving into `to`: `from` at mix 0, `to` at mix 1.
