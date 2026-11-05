@@ -17,11 +17,21 @@ Open the DMG, then open Moobility Cam. A setup window walks you through four ste
 
 It lives in the menu bar and starts at login.
 
+![The setup window: moving the app to Applications, then each step checking off until it says "You're all set."](media/setup.gif)
+
 ## What it does
 
 - **Backgrounds.** Four built-in seasons of cows, or your own photos in `~/Pictures/Moobility Cam`. Give a photo dates, days and times, or a holiday, and it shows up when it should.
+
+  ![Picking Winter, then Spring, then Summer from the menu, and the background behind the person changing each time.](media/backgrounds.gif)
+
 - **Camera modes.** You over a background, plain camera, or background only with the webcam off.
+
+  ![Switching from background only to plain camera, then back to the person over a background.](media/modes.gif)
+
 - **Replay.** Press ⌃⌥⌘R to loop the last minute, and press it again to go live. You can pick another length, or a clip you recorded in advance. Clips have no sound, and your microphone keeps working as usual, so mute yourself in your call app if you step away.
+
+  ![A person waves, presses the hotkey, then walks away. The call keeps showing them waving, while an inset of the real webcam shows an empty chair.](media/replay.gif)
 
 Recent video stays in memory and is wiped when no app is using the camera. Nothing reaches the disk unless you record or keep a clip, in `~/Movies/Moobility Cam`.
 
