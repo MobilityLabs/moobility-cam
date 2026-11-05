@@ -45,6 +45,40 @@ private func near(_ a: (Int, Int, Int), _ b: (Int, Int, Int), _ tol: Int = 3) ->
         #expect(near(pixel(pb, 960, 360), (0, 0, 255)), "\(pixel(pb, 960, 360))")
     }
 
+    /// Vision's mask is coarse, so its edge rarely lands on the person's real edge. The cut must follow the camera.
+    @Test func maskEdgeFollowsTheCameraNotTheCoarseMask() {
+        let c = Compositor()
+        c.setBackground(solid(blue, 1280, 720))
+        let black = CIColor(red: 0, green: 0, blue: 0)
+        // Camera: bright person left of x = 640, dark room right of it.
+        let camera = solid(white, 640, 720).composited(over: solid(black, 1280, 720))
+        // A 64×36 mask whose edge is 1 cell late: it ends at x = 660 in output pixels.
+        let mask = solid(white, 33, 36).composited(over: solid(black, 64, 36))
+        let pb = makeBuffer()
+        c.render(c.composite(camera: camera, mask: mask), into: pb)
+        // Just right of the real edge is the dark room, inside the coarse mask's reach: it must be background.
+        let room = pixel(pb, 650, 360)
+        #expect(room.2 > 200 && room.0 < 40, "\(room)")
+        let person = pixel(pb, 630, 360)
+        #expect(near(person, (255, 255, 255), 20), "\(person)")
+    }
+
+    /// The faint rim of a mask is what leaves a halo of the room around a person.
+    @Test func faintMaskValuesAreBackgroundAndStrongOnesArePerson() {
+        let c = Compositor()
+        c.setBackground(solid(blue, 1280, 720))
+        let pb = makeBuffer()
+        func shown(_ value: CGFloat) -> (Int, Int, Int) {
+            let mask = solid(CIColor(red: value, green: value, blue: value), 1280, 720)
+            c.render(c.composite(camera: solid(red, 1280, 720), mask: mask), into: pb)
+            return pixel(pb, 640, 360)
+        }
+        let faint = shown(0.2)
+        #expect(faint.0 < 12 && faint.2 > 240, "\(faint)")
+        let strong = shown(0.95)
+        #expect(strong.0 > 240 && strong.2 < 12, "\(strong)")
+    }
+
     @Test func blendEnds() {
         let c = Compositor()
         let from = solid(red, 1280, 720), to = solid(blue, 1280, 720)
